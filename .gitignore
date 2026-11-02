@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Secrets: never commit these
+.env
+.streamlit/secrets.toml
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
