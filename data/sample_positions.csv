@@ -1,0 +1,5 @@
+ticker,type,side,strike,expiry,quantity,entry_price
+SOFI,put,short,16.5,2026-11-06,1,0.38
+F,stock,long,,,100,11.80
+F,call,short,13,2026-12-18,1,0.25
+RIVN,call,long,15,2026-12-18,1,0.60

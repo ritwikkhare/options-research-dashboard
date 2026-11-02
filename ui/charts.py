@@ -233,6 +233,46 @@ def screener_heatmap(rows: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def pnl_heatmap(grid: pd.DataFrame, expiries: list[date], iv_shift_pts: int) -> go.Figure:
+    """Portfolio P&L: underlying % move (y) x date (x), diverging around $0."""
+    z = grid.to_numpy()
+    bound = max(float(np.nanmax(np.abs(z))), 1.0)  # symmetric range keeps $0 at the grey midpoint
+    dates = list(grid.columns)
+    columns = np.arange(len(dates))
+    moves_pct = grid.index.to_numpy() * 100
+    date_labels = np.broadcast_to(np.array([f"{d:%a %b %d}" for d in dates], dtype=object), z.shape)
+
+    shift = f" · IV {iv_shift_pts:+d} pts" if iv_shift_pts else ""
+    fig = _base_figure(f"Portfolio P&L by price move and date{shift}", height=560)
+    fig.add_trace(
+        go.Heatmap(
+            x=columns, y=moves_pct, z=z,
+            colorscale=theme.DIVERGING, zmid=0, zmin=-bound, zmax=bound,
+            colorbar=theme.colorbar("P&L", tickformat="$,.0f"),
+            customdata=date_labels, xgap=1, ygap=1,
+            hovertemplate="%{customdata}<br>Underlying %{y:+.0f}%<br>P&L <b>%{z:$,.0f}</b><extra></extra>",
+        )
+    )
+    fig.add_hline(y=0, line=dict(color=theme.TEXT, width=1, dash="dash"),
+                  annotation_text="Today's price", annotation_position="top left",
+                  annotation_font_color=theme.TEXT)
+    for expiry in sorted(set(expiries)):
+        if expiry in dates:
+            x = dates.index(expiry)
+            fig.add_vline(x=x, line=dict(color=theme.TEXT, width=1.5, dash="dot"))
+            fig.add_annotation(x=x, y=1, yref="paper", yanchor="bottom", showarrow=False,
+                               text=f"Expiry {expiry:%b %d}", font=dict(color=theme.TEXT, size=11))
+
+    tick_step = max(1, len(dates) // 10)
+    fig.update_layout(
+        xaxis=dict(title="Date", tickvals=columns[::tick_step], showgrid=False,
+                   ticktext=[f"{d:%b %d}" for d in dates[::tick_step]]),
+        yaxis=dict(title="Underlying move", ticksuffix="%", showgrid=False, dtick=5),
+        margin=dict(t=70),
+    )
+    return fig
+
+
 def smile_chart(smile: pd.DataFrame, spot: float, expiry: date) -> go.Figure:
     """IV by strike for one expiry; recomputed points drawn as open markers."""
     fig = _base_figure(f"IV smile · {expiry:%b %d, %Y}", height=360)

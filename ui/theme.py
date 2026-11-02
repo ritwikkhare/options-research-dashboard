@@ -51,10 +51,11 @@ PLOTLY_TEMPLATE = go.layout.Template(
 CHART_CONFIG = {"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "select2d"]}
 
 
-def colorbar(title: str, suffix: str = "") -> dict:
+def colorbar(title: str, suffix: str = "", tickformat: str = "") -> dict:
     return dict(
         title=dict(text=title, side="right", font=dict(color=TEXT_SECONDARY)),
         ticksuffix=suffix,
+        tickformat=tickformat,
         outlinewidth=0,
         thickness=14,
         tickfont=dict(color=TEXT_SECONDARY),
