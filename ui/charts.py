@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
+from analytics.screener import cell_grid
 from analytics.surface import common_strikes, surface_grid
 from ui import theme
 
@@ -146,6 +147,88 @@ def iv_heatmap(contracts: pd.DataFrame, spot: float, earnings_date: date | None,
         yaxis=dict(title=dict(text="Strike", standoff=14), tickvals=rows[::tick_step], showgrid=False,
                    ticktext=[f"${s:,g}" for s in strikes[::tick_step]]),
         legend=dict(orientation="h", y=-0.16, x=0),
+    )
+    return fig
+
+
+def screener_heatmap(rows: pd.DataFrame) -> go.Figure:
+    """Ticker/strike (y) x expiration (x), colored by annualized return.
+
+    Cells that fail a filter are drawn in flat grey underneath, with the
+    reason in the hover, so near misses stay visible without competing with
+    the trades that qualify.
+    """
+    rows = rows.assign(
+        expiry_label=[f"{e:%b %d, %Y}" for e in rows["expiry"]],
+        return_pct=rows["annualized_return"] * 100,
+        otm_pct=rows["pct_otm"] * 100,
+        iv_pct=rows["iv"] * 100,
+    )
+    returns = cell_grid(rows, "return_pct")
+    passes = cell_grid(rows, "passes").reindex_like(returns).fillna(False).astype(bool).to_numpy()
+    rows["label"] = [f"{t} ${k:,g} put" for t, k in zip(rows["ticker"], rows["strike"])]
+    hover_fields = ["expiry_label", "dte", "premium", "collateral", "breakeven", "otm_pct", "delta",
+                    "iv_pct", "bid", "ask", "open_interest", "fail_reason", "label"]
+    customdata = np.dstack(
+        [cell_grid(rows, field).reindex_like(returns).to_numpy(dtype=object) for field in hover_fields]
+    )
+    keys, expiries = list(returns.index), list(returns.columns)
+    columns, row_ids = np.arange(len(expiries)), np.arange(len(keys))
+    z = returns.to_numpy(dtype=float)
+    exists = ~np.isnan(z)
+    dte_by_expiry = rows.groupby("expiry")["dte"].first()
+
+    fig = _base_figure("Annualized return on collateral", height=int(np.clip(120 + 26 * len(keys), 320, 1100)))
+    fig.add_trace(
+        go.Heatmap(
+            x=columns, y=row_ids, z=np.where(exists & ~passes, 1.0, np.nan),
+            colorscale=[[0, theme.FILTERED_OUT], [1, theme.FILTERED_OUT]], showscale=False,
+            customdata=customdata, hoverongaps=False, xgap=2, ygap=2,
+            hovertemplate=(
+                "<b>%{customdata[12]}</b> · %{customdata[0]} (%{customdata[1]} DTE)<br>"
+                "Filtered out: <i>%{customdata[11]}</i><extra></extra>"
+            ),
+        )
+    )
+    passing_z = np.where(passes, z, np.nan)
+    # Print the return in each passing cell when the grid is small enough to read.
+    cell_text = np.where(passes, np.char.mod("%.0f%%", np.nan_to_num(z)), "") if passes.sum() <= 150 else None
+    fig.add_trace(
+        go.Heatmap(
+            x=columns, y=row_ids, z=passing_z,
+            colorscale=theme.SEQUENTIAL,
+            zmin=0, zmax=max(float(np.nanpercentile(passing_z, 98)), 1.0) if passes.any() else 1.0,
+            colorbar=theme.colorbar("Annualized return", "%"),
+            customdata=customdata, text=cell_text, texttemplate="%{text}" if cell_text is not None else None,
+            hoverongaps=False, xgap=2, ygap=2, textfont=dict(size=11),
+            hovertemplate=(
+                "<b>%{customdata[12]}</b> · %{customdata[0]} (%{customdata[1]} DTE)<br>"
+                "Annualized return <b>%{z:.1f}%</b><br>"
+                "Premium $%{customdata[2]:,.0f} on $%{customdata[3]:,.0f} collateral<br>"
+                "Breakeven $%{customdata[4]:,.2f} · %{customdata[5]:.1f}% below spot<br>"
+                "Delta %{customdata[6]:.2f} · IV %{customdata[7]:.0f}%<br>"
+                "Bid $%{customdata[8]:.2f} / Ask $%{customdata[9]:.2f} · OI %{customdata[10]:,.0f}"
+                "<extra></extra>"
+            ),
+        )
+    )
+    # Legend entry explaining grey cells (an invisible point carries the swatch).
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name="Fails a filter (hover for why)",
+                             marker=dict(symbol="square", size=12, color=theme.FILTERED_OUT)))
+
+    # Thin rules between tickers.
+    tickers = [ticker for ticker, _ in keys]
+    for i in range(1, len(tickers)):
+        if tickers[i] != tickers[i - 1]:
+            fig.add_hline(y=i - 0.5, line=dict(color=theme.TEXT_MUTED, width=1))
+
+    fig.update_layout(
+        xaxis=dict(tickvals=columns, showgrid=False, side="top",
+                   ticktext=[f"{e:%b %d}<br>{dte_by_expiry[e]}d" for e in expiries]),
+        yaxis=dict(tickvals=row_ids, ticktext=[f"{t}  ${s:,g}" for t, s in keys], showgrid=False,
+                   autorange="reversed"),
+        legend=dict(orientation="h", y=0, yanchor="top", x=0, yref="container"),
+        margin=dict(t=90, b=40, l=110),
     )
     return fig
 

@@ -14,6 +14,7 @@ from datetime import date, datetime
 import pandas as pd
 import streamlit as st
 
+from analytics.screener import put_candidates
 from analytics.surface import build_surface
 from market_hours import days_to_expiry, now_et
 from providers import DataProvider, DataProviderError, NoOptionsError, get_provider
@@ -21,56 +22,15 @@ from providers import DataProvider, DataProviderError, NoOptionsError, get_provi
 QUOTE_TTL = 5 * 60          # seconds; matches the auto-refresh interval
 CALENDAR_TTL = 60 * 60      # earnings dates, dividends and rates change slowly
 FALLBACK_RISK_FREE_RATE = 0.04
+# Modest parallelism: fast enough, without tripping Yahoo's rate limits.
+TICKER_WORKERS = 3
+CHAIN_WORKERS = 6
 
 
 def provider() -> DataProvider:
     # Deliberately not cached: providers are cheap to create, and a cached
     # instance would outlive Streamlit's module reloads during development.
     return get_provider()
-
-
-@st.cache_data(ttl=QUOTE_TTL, show_spinner=False)
-def load_spot(ticker: str) -> tuple[float, datetime]:
-    """Spot price plus the time it was fetched (shown as 'Last updated')."""
-    return provider().get_spot(ticker), now_et()
-
-
-@st.cache_data(ttl=QUOTE_TTL, show_spinner=False)
-def load_expirations(ticker: str) -> list[date]:
-    return provider().get_expirations(ticker)
-
-
-@st.cache_data(ttl=QUOTE_TTL, show_spinner=False)
-def load_chains(ticker: str, expiries: tuple[date, ...]) -> pd.DataFrame:
-    """Chains for several expiries, downloaded in parallel (one request each).
-
-    Expiries that fail to load are skipped so one bad expiry doesn't blank
-    the whole view; raises NoOptionsError only if every expiry fails.
-    """
-    source = provider()
-
-    def fetch(expiry: date) -> pd.DataFrame | None:
-        try:
-            return source.get_chain(ticker, expiry)
-        except DataProviderError:
-            return None
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        chains = [chain for chain in pool.map(fetch, expiries) if chain is not None and not chain.empty]
-    if not chains:
-        raise NoOptionsError(f"Couldn't load any {ticker} option quotes right now. Try refreshing.")
-    return pd.concat(chains, ignore_index=True)
-
-
-@st.cache_data(ttl=CALENDAR_TTL, show_spinner=False)
-def load_earnings_date(ticker: str) -> date | None:
-    return provider().get_earnings_date(ticker)
-
-
-@st.cache_data(ttl=CALENDAR_TTL, show_spinner=False)
-def load_dividend_yield(ticker: str) -> float:
-    spot, _ = load_spot(ticker)
-    return provider().get_dividend_yield(ticker, spot)
 
 
 @st.cache_data(ttl=CALENDAR_TTL, show_spinner=False)
@@ -90,14 +50,16 @@ class Snapshot:
     dividend_yield: float
 
 
-def load_snapshot(ticker: str, min_dte: int, max_dte: int) -> Snapshot:
+def fetch_snapshot(ticker: str, min_dte: int, max_dte: int) -> Snapshot:
     """Spot, chains in the DTE range, earnings and dividends for one ticker.
 
+    Plain function (no Streamlit calls) so it can run in worker threads.
     Raises DataProviderError with a user-facing message when there is nothing
     to show (bad symbol, no listed options, nothing in the DTE range).
     """
-    spot, fetched_at = load_spot(ticker)
-    expirations = load_expirations(ticker)
+    source = provider()
+    spot, fetched_at = source.get_spot(ticker), now_et()
+    expirations = source.get_expirations(ticker)
     if not expirations:
         raise NoOptionsError(f"{ticker} has no listed options.")
 
@@ -108,14 +70,53 @@ def load_snapshot(ticker: str, min_dte: int, max_dte: int) -> Snapshot:
             "Widen the expiration range in the sidebar."
         )
 
+    def fetch_chain(expiry: date) -> pd.DataFrame | None:
+        try:
+            return source.get_chain(ticker, expiry)
+        except DataProviderError:
+            return None  # one bad expiry shouldn't blank the whole view
+
+    with ThreadPoolExecutor(max_workers=CHAIN_WORKERS) as pool:
+        chains = [c for c in pool.map(fetch_chain, in_range) if c is not None and not c.empty]
+    if not chains:
+        raise NoOptionsError(f"Couldn't load any {ticker} option quotes right now. Try refreshing.")
+
     return Snapshot(
         ticker=ticker,
         spot=spot,
         fetched_at=fetched_at,
-        chain=load_chains(ticker, tuple(in_range)),
-        earnings_date=load_earnings_date(ticker),
-        dividend_yield=load_dividend_yield(ticker),
+        chain=pd.concat(chains, ignore_index=True),
+        earnings_date=source.get_earnings_date(ticker),
+        dividend_yield=source.get_dividend_yield(ticker, spot),
     )
+
+
+@st.cache_data(ttl=QUOTE_TTL, show_spinner=False)
+def load_snapshot(ticker: str, min_dte: int, max_dte: int) -> Snapshot:
+    return fetch_snapshot(ticker, min_dte, max_dte)
+
+
+@st.cache_data(ttl=QUOTE_TTL, show_spinner=False)
+def load_watchlist(
+    tickers: tuple[str, ...], min_dte: int, max_dte: int
+) -> tuple[list[Snapshot], dict[str, str]]:
+    """Snapshots for several tickers fetched in parallel.
+
+    Returns the snapshots that loaded plus {ticker: friendly error} for the
+    ones that didn't, so one bad symbol doesn't sink the whole watchlist.
+    """
+
+    def fetch(ticker: str) -> Snapshot | str:
+        try:
+            return fetch_snapshot(ticker, min_dte, max_dte)
+        except DataProviderError as exc:
+            return str(exc)
+
+    with ThreadPoolExecutor(max_workers=TICKER_WORKERS) as pool:
+        results = list(pool.map(fetch, tickers))
+    snapshots = [r for r in results if isinstance(r, Snapshot)]
+    errors = {t: r for t, r in zip(tickers, results) if isinstance(r, str)}
+    return snapshots, errors
 
 
 @st.cache_data(ttl=QUOTE_TTL, show_spinner="Solving implied volatilities...")
@@ -124,3 +125,11 @@ def cached_surface(
 ) -> pd.DataFrame:
     """build_surface is the slow step (one IV solve per contract), so cache it."""
     return build_surface(chain, spot, r, q, as_of, after_hours)
+
+
+@st.cache_data(ttl=QUOTE_TTL, show_spinner=False)
+def cached_put_candidates(
+    chain: pd.DataFrame, ticker: str, spot: float, r: float, q: float, as_of: datetime, after_hours: bool
+) -> pd.DataFrame:
+    """Puts with IV, delta and return metrics, independent of filter settings."""
+    return put_candidates(chain, ticker, spot, r, q, as_of, after_hours)

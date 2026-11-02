@@ -12,7 +12,7 @@ import streamlit as st
 
 from market_hours import is_market_open, now_et
 from providers import DataProviderError
-from ui import tab_surface
+from ui import tab_screener, tab_surface
 from ui.data import QUOTE_TTL, load_snapshot
 from ui.sidebar import render_sidebar, show_last_updated
 
@@ -68,7 +68,7 @@ def main() -> None:
         else:
             show_safely(tab_surface.render, snapshot, settings)
     with screener_tab:
-        st.info("The cash-secured put screener arrives in Stage 4.")
+        show_safely(tab_screener.render, settings)
     with risk_tab:
         st.info("The portfolio risk view arrives in Stage 5.")
 
