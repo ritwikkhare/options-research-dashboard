@@ -130,8 +130,9 @@ def _greeks_table(valued: pd.DataFrame, totals: dict) -> None:
     table = pd.DataFrame(
         {
             "Position": valued["label"],
-            "DTE": valued["dte"],
-            "IV": valued["iv"].where(valued["type"] != "stock") * 100,
+            # Text, not numbers, so stock rows read blank instead of "None".
+            "DTE": [f"{int(d)}" if t != "stock" else "" for d, t in zip(valued["dte"], valued["type"])],
+            "IV": [f"{iv:.0%}" if t != "stock" else "" for iv, t in zip(valued["iv"], valued["type"])],
             "Value": valued["market_value"],
             "P&L": valued["pnl"],
             "Delta (sh)": valued["delta"],
@@ -144,7 +145,7 @@ def _greeks_table(valued: pd.DataFrame, totals: dict) -> None:
         }
     )
     total_row = {
-        "Position": "Total", "DTE": None, "IV": None, "Value": totals["market_value"], "P&L": totals["pnl"],
+        "Position": "Total", "DTE": "", "IV": "", "Value": totals["market_value"], "P&L": totals["pnl"],
         "Delta (sh)": totals["delta"], "Gamma": totals["gamma"], "Theta $/day": totals["theta"],
         "Vega $/pt": totals["vega"], "Collateral": totals["collateral"],
         "Max loss": "Unlimited" if math.isinf(totals["max_loss"]) else f"${totals['max_loss']:,.0f}",
@@ -157,7 +158,6 @@ def _greeks_table(valued: pd.DataFrame, totals: dict) -> None:
         hide_index=True,
         width="stretch",
         column_config={
-            "IV": st.column_config.NumberColumn(format="%.0f%%"),
             "Value": money,
             "P&L": money,
             "Delta (sh)": st.column_config.NumberColumn(

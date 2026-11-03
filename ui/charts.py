@@ -144,7 +144,7 @@ def iv_heatmap(contracts: pd.DataFrame, spot: float, earnings_date: date | None,
     fig.update_layout(
         xaxis=dict(title="Expiration", tickvals=columns, showgrid=False,
                    ticktext=[f"{e:%b %d}<br>{dte_by_expiry[e]}d" for e in expiries]),
-        yaxis=dict(title=dict(text="Strike", standoff=14), tickvals=rows[::tick_step], showgrid=False,
+        yaxis=dict(title="Strike", tickvals=rows[::tick_step], showgrid=False,
                    ticktext=[f"${s:,g}" for s in strikes[::tick_step]]),
         legend=dict(orientation="h", y=-0.16, x=0),
     )
